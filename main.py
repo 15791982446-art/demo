@@ -60,6 +60,23 @@ def is_slot_ok(code, message):
     return code == 200 or any(k in message for k in ALREADY_BOOKED_KEYS)
 
 
+# 图书馆晚上放号，提前跑起来就等到点再抢；已经过点就直接开抢
+def wait_until_release(release_time):
+    try:
+        hh, mm, ss = [int(x) for x in str(release_time).split(":")]
+    except Exception:
+        hh, mm, ss = 20, 0, 0
+    now = datetime.now()
+    target = now.replace(hour=hh, minute=mm, second=ss, microsecond=0)
+    if now >= target:
+        print("放号时间 {:02d}:{:02d} 已过，立即开始".format(hh, mm))
+        return
+    wait_seconds = (target - now).total_seconds()
+    print("等待 {:02d}:{:02d}:{:02d} 放号，还需 {:.0f} 秒".format(hh, mm, ss, wait_seconds))
+    time.sleep(wait_seconds)
+    print("放号时间到，开抢")
+
+
 # 一天要么配 开始时间/持续小时数 一个时段，要么配「时间段」列表约多段
 def get_time_slots(date_config):
     if '时间段' in date_config:
@@ -322,6 +339,8 @@ if __name__ == "__main__":
         s.driver.quit()
         logging.info('Getting user info unsuccessful')
         exit(-1)
+    # 登录完再等放号，放号那一刻手里已经有登录态，直接开抢
+    wait_until_release(s.cfg.get("release-time", "20:00:00"))
     results = s.book_favorite_seat(user_config=user_config, seat_config=seat_config)
     lines = []
     all_ok = True
