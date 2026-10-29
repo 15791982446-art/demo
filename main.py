@@ -56,6 +56,10 @@ def slot_label(start, hours):
     return "{:g}:00-{:g}:00".format(start, start + hours)
 
 
+def is_slot_ok(code, message):
+    return code == 200 or any(k in message for k in ALREADY_BOOKED_KEYS)
+
+
 # 一天要么配 开始时间/持续小时数 一个时段，要么配「时间段」列表约多段
 def get_time_slots(date_config):
     if '时间段' in date_config:
@@ -90,7 +94,7 @@ class SeatAutoBooker:
         self.pd = os.environ["PASSWORD"].strip()  # 密码
         self.SCKey = None
         try:
-            self.SCKey = os.environ["SCKEY"]
+            self.SCKey = os.environ["SCKEY"].strip()
         except KeyError:
             print("没有Server酱的key,将不会推送消息")
 
@@ -260,24 +264,30 @@ class SeatAutoBooker:
         print("获取用户数据成功")
         return 0
 
-    def wechatNotice(self, message, desp=None):
+    def wechatNotice(self, title, desp=None):
         logging.info('Sending WeChat notice')
 
-        if self.SCKey != '':
-            url = 'https://sctapi.ftqq.com/{0}.send'.format(self.SCKey)
-            data = {
-                'title': message,
-                'desp': desp,
-            }
-            try:
-                r = requests.post(url, data=data)
-                if r.json()["data"]["error"] == 'SUCCESS':
-                    print("Server酱通知成功")
-                else:
-                    print("Server酱通知失败")
-            except Exception as e:
-                logging.exception(e)
-                print(e.__class__, "推送服务配置错误")
+        if not self.SCKey:
+            print("没有 Server酱 的 key，跳过微信通知")
+            return False
+        url = 'https://sctapi.ftqq.com/{0}.send'.format(self.SCKey)
+        body = {
+            'title': title,
+            'desp': desp if desp else title,
+        }
+        try:
+            r = requests.post(url, data=body, timeout=15)
+            ret = r.json()
+            data = ret.get('data') if isinstance(ret.get('data'), dict) else {}
+            if ret.get('code') == 0 or data.get('error') == 'SUCCESS':
+                print("Server酱通知成功")
+                return True
+            print("Server酱通知失败：{} {}".format(ret.get('message'), ret.get('code')))
+            return False
+        except Exception as e:
+            logging.exception(e)
+            print(e.__class__, "推送服务配置错误")
+            return False
 
 if __name__ == "__main__":
     logging.info('Start of the program')
@@ -301,20 +311,34 @@ if __name__ == "__main__":
 
     s = SeatAutoBooker(basic_config["SeatAutoBooker"])
     if not s.login() == 0:
+        s.wechatNotice("预约失败：{} 登录失败".format(target_weekday_name()),
+                       "登录环节出错，请到 GitHub Actions 查看日志。")
         s.driver.quit()
         logging.info('Login unsuccessful')
         exit(-1)
     if not s.get_user_info() == 0:
+        s.wechatNotice("预约失败：{} 获取用户信息失败".format(target_weekday_name()),
+                       "登录成功但拿不到用户数据，请到 GitHub Actions 查看日志。")
         s.driver.quit()
         logging.info('Getting user info unsuccessful')
         exit(-1)
     results = s.book_favorite_seat(user_config=user_config, seat_config=seat_config)
+    lines = []
+    all_ok = True
     for slot, code, message in results:
+        ok = is_slot_ok(code, message)
+        all_ok = all_ok and ok
         print("预约结果[{}]: {} {}".format(slot, code, message))
+        lines.append("{} {} {}".format("[成功]" if ok else "[失败]", slot, message))
     s.driver.quit()
     logging.info('End of the program')
+
+    book_date = (datetime.now() + timedelta(days=BOOK_DAYS_AHEAD)).strftime("%m-%d")
+    s.wechatNotice(
+        "预约{}：{}（{}）".format("成功" if all_ok else "失败", target_weekday_name(), book_date),
+        "\n\n".join(lines),
+    )
     # 约失败要让 workflow 变红，别再假绿骗人
-    if not all(code == 200 or any(k in message for k in ALREADY_BOOKED_KEYS)
-               for _, code, message in results):
+    if not all_ok:
         print("有时段未预约成功，退出码 1")
         exit(1)
