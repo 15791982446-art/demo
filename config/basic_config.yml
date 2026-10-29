@@ -18,3 +18,4 @@ SeatAutoBooker:
     Connection: close
   cron-delta-minutes: 5
   max-retry: 20
+  release-time: "20:00:00"
