@@ -127,8 +127,10 @@ class SeatAutoBooker:
         return results
 
     def _book_slot(self, user_config, seat_config, start, hours, preferred_seat=None):
-        retry_sleep_time = timedelta(minutes=self.cfg["cron-delta-minutes"]).seconds*2/(self.cfg["max-retry"]-2) - 10
-        for tried_times in range(self.cfg["max-retry"]):
+        retry_sleep_time = max(timedelta(minutes=self.cfg["cron-delta-minutes"]).seconds*2/(self.cfg["max-retry"]-2) - 10, 5)
+        tried_times = 0
+        rate_limited_times = 0
+        while tried_times < self.cfg["max-retry"]:
             try:
                 result = self._book_favorite_seat(user_config, seat_config, start, hours, tried_times, preferred_seat)
                 msg = str(result[1]) if result else ""
@@ -136,16 +138,26 @@ class SeatAutoBooker:
                     print("该时段已有预约，跳过：{}".format(result[1]))
                     return result
                 if result and any(k in msg for k in ("频繁", "人数过多")):
-                    print("触发限流({})，{:.0f}秒后重试".format(result[1], retry_sleep_time))
+                    # 限流不算一次有效尝试，否则重试次数会被白白吃掉一半
+                    rate_limited_times += 1
+                    if rate_limited_times > 10:
+                        print("连续限流 {} 次，放弃本时段".format(rate_limited_times))
+                        return result
+                    print("触发限流({})，{:.0f}秒后重试，剩余有效次数 {}".format(
+                        result[1], retry_sleep_time, self.cfg["max-retry"] - tried_times))
                     time.sleep(retry_sleep_time)
                     continue
+                tried_times += 1
                 if result and any(k in msg for k in SEAT_TAKEN_KEYS):
-                    print("座位不可约({})，换一个再试".format(result[1]))
+                    print("座位不可约({})，换一个再试，剩余次数 {}".format(
+                        result[1], self.cfg["max-retry"] - tried_times))
+                    time.sleep(2)
                     continue
                 return result
             except Exception as e:
                 logging.exception(e)
                 print(e.__class__, "尝试第{}次".format(tried_times))
+                tried_times += 1
                 time.sleep(retry_sleep_time)
 
     def _book_favorite_seat(self, user_config, seat_config, start, hours, tried_times=0, preferred_seat=None):
@@ -156,11 +168,11 @@ class SeatAutoBooker:
         book_time = today_0_clock + timedelta(days=BOOK_DAYS_AHEAD) + timedelta(hours=start)
         delta = book_time - self.cfg["start-time"]
         total_seconds = delta.days * 24 * 3600 + delta.seconds
-        # 第一轮优先沿用上一时段约到的座位，被占后再随机换
+        # 第一轮优先沿用上一时段约到的座位，之后按顺序轮换，避免死磕同一个座位
         if tried_times == 0 and preferred_seat in seats:
             seat = preferred_seat
-        elif date_config['name'] == '自定义' and tried_times<self.cfg["max-retry"]/3*2:
-            seat = seats[0]
+        elif date_config['name'] == '自定义':
+            seat = seats[tried_times % len(seats)]
         else:
             seat = random.choice(seats)
         data = f"beginTime={total_seconds}&duration={3600 * hours}&&seats[0]={seat}&seatBookers[0]={self.user_data['uid']}"
@@ -223,6 +235,10 @@ class SeatAutoBooker:
             logging.info("登录成功！")
         except Exception as e:
             logging.error(f"登录失败：{e}")
+            try:
+                print("登录失败，当前页面：{}  标题：{}".format(self.driver.current_url, self.driver.title))
+            except Exception:
+                pass
             return -1
         return 0
 
@@ -251,7 +267,7 @@ class SeatAutoBooker:
             url = 'https://sctapi.ftqq.com/{0}.send'.format(self.SCKey)
             data = {
                 'title': message,
-                desp: desp,
+                'desp': desp,
             }
             try:
                 r = requests.post(url, data=data)
@@ -297,3 +313,8 @@ if __name__ == "__main__":
         print("预约结果[{}]: {} {}".format(slot, code, message))
     s.driver.quit()
     logging.info('End of the program')
+    # 约失败要让 workflow 变红，别再假绿骗人
+    if not all(code == 200 or any(k in message for k in ALREADY_BOOKED_KEYS)
+               for _, code, message in results):
+        print("有时段未预约成功，退出码 1")
+        exit(1)
