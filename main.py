@@ -60,7 +60,9 @@ def slot_label(start, hours):
 
 
 def is_slot_ok(code, message):
-    return code == 200 or any(k in message for k in ALREADY_BOOKED_KEYS)
+    # 服务器成功时 CODE 返回字符串 "ok"，不是数字 200
+    return (str(code).lower() == "ok" or code == 200
+            or "预约成功" in message or any(k in message for k in ALREADY_BOOKED_KEYS))
 
 
 # 图书馆晚上放号，提前跑起来就等到点再抢；已经过点就直接开抢
