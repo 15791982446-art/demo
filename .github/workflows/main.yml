@@ -2,7 +2,8 @@ name: HDU Auto Book
 
 on:
   workflow_dispatch:
-
+  schedule:
+    - cron: '0 12 * * *'
 jobs:
   bot:
     runs-on: ubuntu-latest
