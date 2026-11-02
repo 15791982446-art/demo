@@ -1,0 +1,32 @@
+name: Verify Config
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.12
+      - run: pip install -q -r requirements.txt
+      - name: Verify
+        run: |
+          python -m py_compile main.py
+          echo "SYNTAX OK"
+          python - <<'PY'
+          import yaml, main
+          uc = yaml.safe_load(open('user_config.yml', encoding='utf-8'))
+          sc = yaml.safe_load(open('config/seat_config.yml', encoding='utf-8'))
+          for d in main.WEEKDAYS:
+              c = uc[d]
+              seats = main.get_seats_with_config(uc, c, sc)
+              print('%s | %s | %-28s | 共%3d | 优先%2d 个: %s..%s | 第%d个开始备选: %d'
+                    % (d, c['name'], str([main.slot_label(s, h) for s, h in main.get_time_slots(c)]),
+                       len(seats), 20, seats[0], seats[19], 21, seats[20]))
+          print('ALL OK')
+          PY
