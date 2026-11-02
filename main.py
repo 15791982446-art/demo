@@ -219,61 +219,68 @@ class SeatAutoBooker:
 
     def login(self):
         logging.info('Login in')
-
-        try:
-            logging.info('开始登陆...')
-
-            self.driver.get("https://hdu.huitu.zhishulib.com/")
-            self.wait.until(lambda d: "sso.hdu.edu.cn" in d.current_url)
-
-            # 排除同名隐藏域
-            form_wait = WebDriverWait(self.driver, 30, 0.5)
-            user_el = form_wait.until(EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "input[name='username']:not([type='hidden'])")
-            ))
-
-            # 关掉公告弹窗
-            for close_button in self.driver.find_elements(
-                By.CSS_SELECTOR, "img.icon-close, .ant-modal-close"
-            ):
-                if close_button.is_displayed() and close_button.is_enabled():
-                    close_button.click()
-                    self.wait.until(EC.invisibility_of_element(close_button))
-
-            user_el.clear()
-            user_el.send_keys(self.un)
-            logging.info('输入用户名')
-
-            pwd_el = form_wait.until(EC.visibility_of_element_located(
-                (By.CSS_SELECTOR, "input[type='password']")))
-            pwd_el.clear()
-            pwd_el.send_keys(self.pd)
-            logging.info('输入密码')
-
-            # 失焦后再点登录
-            pwd_el.send_keys(Keys.TAB)
-            form_wait.until(lambda d: "disabled" not in d.find_element(
-                By.CSS_SELECTOR, "button.login-button").get_attribute("class"))
-            self.driver.find_element(By.CSS_SELECTOR, "button.login-button").click()
-            logging.info('点击登录按钮')
-
-            # 等跳回图书馆域名
-            WebDriverWait(self.driver, 30, 0.5).until(
-                lambda d: urlsplit(d.current_url).hostname == "hdu.huitu.zhishulib.com")
-            time.sleep(5)
-            cookie_list = self.driver.get_cookies()
-            self.cookie = ";".join([item["name"] + "=" + item["value"] + "" for item in cookie_list])
-            self.cfg["headers"]['Cookie'] = self.cookie
-
-            logging.info("登录成功！")
-        except Exception as e:
-            logging.error(f"登录失败：{e}")
+        last_error = None
+        # 放号高峰 SSO 会卡，失败就重来，最多 3 次
+        for attempt in range(3):
+            if attempt:
+                print("登录重试第 {} 次".format(attempt))
+                time.sleep(5)
             try:
-                print("登录失败，当前页面：{}  标题：{}".format(self.driver.current_url, self.driver.title))
-            except Exception:
-                pass
-            return -1
-        return 0
+                logging.info('开始登陆...')
+
+                self.driver.get("https://hdu.huitu.zhishulib.com/")
+                self.wait.until(lambda d: "sso.hdu.edu.cn" in d.current_url)
+
+                # 排除同名隐藏域
+                form_wait = WebDriverWait(self.driver, 45, 0.5)
+                user_el = form_wait.until(EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, "input[name='username']:not([type='hidden'])")
+                ))
+
+                # 关掉公告弹窗
+                for close_button in self.driver.find_elements(
+                    By.CSS_SELECTOR, "img.icon-close, .ant-modal-close"
+                ):
+                    if close_button.is_displayed() and close_button.is_enabled():
+                        close_button.click()
+                        self.wait.until(EC.invisibility_of_element(close_button))
+
+                user_el.clear()
+                user_el.send_keys(self.un)
+                logging.info('输入用户名')
+
+                pwd_el = form_wait.until(EC.visibility_of_element_located(
+                    (By.CSS_SELECTOR, "input[type='password']")))
+                pwd_el.clear()
+                pwd_el.send_keys(self.pd)
+                logging.info('输入密码')
+
+                # 失焦后再点登录
+                pwd_el.send_keys(Keys.TAB)
+                form_wait.until(lambda d: "disabled" not in d.find_element(
+                    By.CSS_SELECTOR, "button.login-button").get_attribute("class"))
+                self.driver.find_element(By.CSS_SELECTOR, "button.login-button").click()
+                logging.info('点击登录按钮')
+
+                # 放号时 SSO 很慢，给足 90 秒
+                WebDriverWait(self.driver, 90, 0.5).until(
+                    lambda d: urlsplit(d.current_url).hostname == "hdu.huitu.zhishulib.com")
+                time.sleep(5)
+                cookie_list = self.driver.get_cookies()
+                self.cookie = ";".join([item["name"] + "=" + item["value"] + "" for item in cookie_list])
+                self.cfg["headers"]['Cookie'] = self.cookie
+
+                logging.info("登录成功！")
+                return 0
+            except Exception as e:
+                last_error = e
+                logging.error(f"登录失败：{e}")
+                try:
+                    print("登录失败，当前页面：{}  标题：{}".format(self.driver.current_url, self.driver.title))
+                except Exception:
+                    pass
+        logging.error(f"连续 3 次登录失败：{last_error}")
+        return -1
 
     def get_user_info(self):
         logging.info('Getting user info')
