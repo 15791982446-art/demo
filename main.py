@@ -148,40 +148,51 @@ class SeatAutoBooker:
         return results
 
     def _book_slot(self, user_config, seat_config, start, hours, preferred_seat=None):
-        retry_sleep_time = max(timedelta(minutes=self.cfg["cron-delta-minutes"]).seconds*2/(self.cfg["max-retry"]-2) - 10, 5)
-        tried_times = 0
-        rate_limited_times = 0
-        while tried_times < self.cfg["max-retry"]:
+        max_retry = self.cfg["max-retry"]
+        seat_attempts = 0   # 每次请求都 +1，用来轮换座位
+        tried_times = 0     # 有效尝试次数，只有服务器给出明确结论才算
+        error_times = 0     # 连续限流/异常次数，连续太多次才放弃
+        while tried_times < max_retry and seat_attempts < max_retry * 5:
             try:
-                result = self._book_favorite_seat(user_config, seat_config, start, hours, tried_times, preferred_seat)
+                result = self._book_favorite_seat(user_config, seat_config, start, hours, seat_attempts, preferred_seat)
+                seat_attempts += 1
                 msg = str(result[1]) if result else ""
                 if result and any(k in msg for k in ALREADY_BOOKED_KEYS):
                     print("该时段已有预约，跳过：{}".format(result[1]))
                     return result
                 if result and any(k in msg for k in ("频繁", "人数过多")):
-                    # 限流不算一次有效尝试，否则重试次数会被白白吃掉一半
-                    rate_limited_times += 1
-                    if rate_limited_times > 10:
-                        print("连续限流 {} 次，放弃本时段".format(rate_limited_times))
+                    # 限流不算一次有效尝试，短暂停顿后立刻再抢，别把放号窗口睡过去
+                    error_times += 1
+                    if error_times > max_retry:
+                        print("连续被限流 {} 次，放弃本时段".format(error_times))
                         return result
-                    print("触发限流({})，{:.0f}秒后重试，剩余有效次数 {}".format(
-                        result[1], retry_sleep_time, self.cfg["max-retry"] - tried_times))
-                    time.sleep(retry_sleep_time)
+                    wait = min(1 + error_times, 5)
+                    print("被限流({})，{} 秒后重试（有效 {}/{}）".format(
+                        result[1], wait, tried_times, max_retry))
+                    time.sleep(wait)
                     continue
                 tried_times += 1
+                error_times = 0
                 if result and any(k in msg for k in SEAT_TAKEN_KEYS):
-                    print("座位不可约({})，换一个再试，剩余次数 {}".format(
-                        result[1], self.cfg["max-retry"] - tried_times))
-                    time.sleep(2)
+                    print("座位不可约({})，换一个，有效 {}/{}".format(
+                        result[1], tried_times, max_retry))
+                    time.sleep(0.5)
                     continue
                 return result
             except Exception as e:
-                logging.exception(e)
-                print(e.__class__, "尝试第{}次".format(tried_times))
-                tried_times += 1
-                time.sleep(retry_sleep_time)
+                # 抢号高峰服务器常常返回限流页而不是 JSON，解析会炸；
+                # 这种不算一次有效尝试，停一下马上重试
+                seat_attempts += 1
+                error_times += 1
+                if error_times > max_retry:
+                    print("连续异常 {} 次，放弃本时段（{}）".format(error_times, e.__class__.__name__))
+                    return None
+                wait = min(1 + error_times, 5)
+                print("{}，{} 秒后重试（响应无法解析，多半是限流）".format(e.__class__.__name__, wait))
+                time.sleep(wait)
+        return None
 
-    def _book_favorite_seat(self, user_config, seat_config, start, hours, tried_times=0, preferred_seat=None):
+    def _book_favorite_seat(self, user_config, seat_config, start, hours, seat_attempts=0, preferred_seat=None):
         logging.info('Entering _book_favorite_seat method')
         date_config = user_config[target_weekday_name()]
         seats = get_seats_with_config(user_config, date_config, seat_config)
@@ -189,13 +200,11 @@ class SeatAutoBooker:
         book_time = today_0_clock + timedelta(days=BOOK_DAYS_AHEAD) + timedelta(hours=start)
         delta = book_time - self.cfg["start-time"]
         total_seconds = delta.days * 24 * 3600 + delta.seconds
-        # 第一轮优先沿用上一时段约到的座位，之后按顺序轮换，避免死磕同一个座位
-        if tried_times == 0 and preferred_seat in seats:
+        # 第一轮优先沿用上一时段约到的座位，之后按顺序轮换，保证每次换一个新座位
+        if seat_attempts == 0 and preferred_seat in seats:
             seat = preferred_seat
-        elif date_config['name'] == '自定义':
-            seat = seats[tried_times % len(seats)]
         else:
-            seat = random.choice(seats)
+            seat = seats[seat_attempts % len(seats)]
         data = f"beginTime={total_seconds}&duration={3600 * hours}&&seats[0]={seat}&seatBookers[0]={self.user_data['uid']}"
 
         headers = self.cfg["headers"]
