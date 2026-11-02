@@ -49,7 +49,10 @@ def get_seats_with_config(user_config, date_config, seat_config):
     seat_name = date_config['name']
     if seat_name == "自定义":
         return user_config['自定义']
-    return expand_seat_cfg(seat_config[seat_name])
+    seats = expand_seat_cfg(seat_config[seat_name])
+    # 先按「自定义」里指定的座位顺序试，全被占了再扩到整个房间
+    preferred = [s for s in user_config.get('自定义', []) if s in seats]
+    return preferred + [s for s in seats if s not in preferred]
 
 
 def slot_label(start, hours):
