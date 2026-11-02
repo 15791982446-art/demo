@@ -17,5 +17,5 @@ SeatAutoBooker:
     Accept-Language: zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7
     Connection: close
   cron-delta-minutes: 5
-  max-retry: 20
+  max-retry: 60
   release-time: "20:00:00"
