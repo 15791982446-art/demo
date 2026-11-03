@@ -11,7 +11,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 import time
@@ -137,12 +137,59 @@ class SeatAutoBooker:
 
         self.cfg = booker_config
 
+    def book_begin_timestamp(self, start):
+        today_0_clock = datetime.strptime(datetime.now().strftime("%Y-%m-%d 00:00:00"), "%Y-%m-%d %H:%M:%S")
+        book_time = today_0_clock + timedelta(days=BOOK_DAYS_AHEAD) + timedelta(hours=start)
+        delta = book_time - self.cfg["start-time"]
+        return int(delta.days * 24 * 3600 + delta.seconds)
+
+    def prepare_booking_seat_map(self, user_config, seat_config, start, hours):
+        """对应人工流程里「选日期 -> 加载座位图」这一步，预约前必须先做"""
+        date_config = user_config[target_weekday_name()]
+        floor = date_config['name']
+        room_title = seat_config.get(floor, {}).get('title', floor)
+        headers = dict(self.cfg["headers"])
+        headers['Cookie'] = self.cookie
+        try:
+            r = requests.get("https://hdu.huitu.zhishulib.com/Space/Category/list?LAB_JSON=1",
+                             headers=headers)
+            data = r.json()
+            items = data["content"]["children"][1]["defaultItems"]
+            query = None
+            names = []
+            for item in items:
+                name = item.get("name", "")
+                names.append(name)
+                if query is None and (name == room_title or name == floor
+                                      or floor in name or (room_title and room_title in name)):
+                    link = unquote(item.get("link", {}).get("url", ""))
+                    query = link.split("?", 1)[1] if "?" in link else ""
+            if query is None:
+                print("加载座位图：没找到房间「{}」，可选项 {}".format(room_title, " / ".join(names)))
+                return False
+            params = {}
+            for kv in query.split("&"):
+                if "=" in kv:
+                    k, v = kv.split("=", 1)
+                    params[k] = unquote(v)
+            params["beginTime"] = str(self.book_begin_timestamp(start))
+            params["duration"] = str(3600 * hours)
+            params["num"] = "1"
+            r2 = requests.post("https://hdu.huitu.zhishulib.com/Seat/Index/searchSeats?LAB_JSON=1",
+                               data=params, headers=headers)
+            print("座位图已加载：HTTP {}  {}".format(r2.status_code, r2.text[:100].replace("\n", " ")))
+            return True
+        except Exception as e:
+            print("加载座位图失败：{} {}".format(e.__class__.__name__, e))
+            return False
+
     def book_favorite_seat(self, user_config, seat_config):
         results = []
         preferred_seat = None
         for start, hours in get_time_slots(user_config[target_weekday_name()]):
             label = slot_label(start, hours)
             print("开始预约时段 {}".format(label))
+            self.prepare_booking_seat_map(user_config, seat_config, start, hours)
             result = self._book_slot(user_config, seat_config, start, hours, preferred_seat)
             if result:
                 code, message, seat = result
@@ -178,8 +225,8 @@ class SeatAutoBooker:
                     continue
                 if result and ("订座流程" in msg or "先查询" in msg):
                     # 服务器要求先查座位：重新查一次再约，不消耗有效次数
-                    print("需要先查询座位({})，重新查询后重试".format(result[1]))
-                    self.get_user_info()
+                    print("需要先查询座位({})，重新加载座位图后重试".format(result[1]))
+                    self.prepare_booking_seat_map(user_config, seat_config, start, hours)
                     error_times += 1
                     if error_times > max_retry:
                         return result
