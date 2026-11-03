@@ -176,6 +176,15 @@ class SeatAutoBooker:
                         result[1], wait, tried_times, max_retry))
                     time.sleep(wait)
                     continue
+                if result and ("订座流程" in msg or "先查询" in msg):
+                    # 服务器要求先查座位：重新查一次再约，不消耗有效次数
+                    print("需要先查询座位({})，重新查询后重试".format(result[1]))
+                    self.get_user_info()
+                    error_times += 1
+                    if error_times > max_retry:
+                        return result
+                    time.sleep(1)
+                    continue
                 tried_times += 1
                 error_times = 0
                 if result and any(k in msg for k in SEAT_TAKEN_KEYS):
@@ -362,6 +371,9 @@ if __name__ == "__main__":
         exit(-1)
     # 登录完再等放号，放号那一刻手里已经有登录态，直接开抢
     wait_until_release(s.cfg.get("release-time", "20:00:00"))
+    # 20:00 整点系统会刷新座位数据，登录时查的那次作废，必须重新查一次座位
+    if s.get_user_info() != 0:
+        print("放号后重新查询座位失败，仍然继续尝试预约")
     results = s.book_favorite_seat(user_config=user_config, seat_config=seat_config)
     lines = []
     all_ok = True
