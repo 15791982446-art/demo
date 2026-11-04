@@ -275,11 +275,20 @@ class SeatAutoBooker:
         self.json = json.loads(self.resp.text)
         return self.json["CODE"], self.json["MESSAGE"] + " 座位:{}".format(seat), seat
 
+    def _page_hint(self):
+        """抓一段当前页面可见文字，登录失败时打进日志方便定位"""
+        try:
+            txt = self.driver.execute_script(
+                "return (document.body ? document.body.innerText : '').replace(/[\\r\\n\\t ]+/g, ' ').slice(0, 200);")
+            return txt or ""
+        except Exception:
+            return ""
+
     def login(self):
         logging.info('Login in')
         last_error = None
-        # 放号高峰 SSO 会卡，失败就重来，最多 3 次
-        for attempt in range(3):
+        # 放号高峰 SSO 会卡，失败就重来，最多 5 次
+        for attempt in range(5):
             if attempt:
                 print("登录重试第 {} 次".format(attempt))
                 time.sleep(5)
@@ -290,7 +299,7 @@ class SeatAutoBooker:
                 self.wait.until(lambda d: "sso.hdu.edu.cn" in d.current_url)
 
                 # 排除同名隐藏域
-                form_wait = WebDriverWait(self.driver, 45, 0.5)
+                form_wait = WebDriverWait(self.driver, 30, 0.5)
                 user_el = form_wait.until(EC.element_to_be_clickable(
                     (By.CSS_SELECTOR, "input[name='username']:not([type='hidden'])")
                 ))
@@ -313,15 +322,29 @@ class SeatAutoBooker:
                 pwd_el.send_keys(self.pd)
                 logging.info('输入密码')
 
-                # 失焦后再点登录
+                # 手动补发 input/change 事件，让页面 JS 认为两个框都填好了，
+                # 否则登录按钮会一直是 disabled（10-04 就是卡在这里）
+                for el in (user_el, pwd_el):
+                    self.driver.execute_script(
+                        "arguments[0].dispatchEvent(new Event('input',{bubbles:true}));"
+                        "arguments[0].dispatchEvent(new Event('change',{bubbles:true}));", el)
                 pwd_el.send_keys(Keys.TAB)
-                form_wait.until(lambda d: "disabled" not in d.find_element(
-                    By.CSS_SELECTOR, "button.login-button").get_attribute("class"))
-                self.driver.find_element(By.CSS_SELECTOR, "button.login-button").click()
+
+                login_btn = self.driver.find_element(By.CSS_SELECTOR, "button.login-button")
+                try:
+                    WebDriverWait(self.driver, 20, 0.5).until(
+                        lambda d: "disabled" not in (login_btn.get_attribute("class") or ""))
+                except Exception:
+                    print("登录按钮仍然不可点，class={}  页面文字={}".format(
+                        login_btn.get_attribute("class"), self._page_hint()))
+                    # 兜底：直接派发点击事件
+                    self.driver.execute_script("arguments[0].click();", login_btn)
+                else:
+                    login_btn.click()
                 logging.info('点击登录按钮')
 
-                # 放号时 SSO 很慢，给足 90 秒
-                WebDriverWait(self.driver, 90, 0.5).until(
+                # 放号时 SSO 很慢，给足 60 秒
+                WebDriverWait(self.driver, 60, 0.5).until(
                     lambda d: urlsplit(d.current_url).hostname == "hdu.huitu.zhishulib.com")
                 time.sleep(5)
                 cookie_list = self.driver.get_cookies()
@@ -334,10 +357,11 @@ class SeatAutoBooker:
                 last_error = e
                 logging.error(f"登录失败：{e}")
                 try:
-                    print("登录失败，当前页面：{}  标题：{}".format(self.driver.current_url, self.driver.title))
+                    print("登录失败，当前页面：{}  标题：{}  文字：{}".format(
+                        self.driver.current_url, self.driver.title, self._page_hint()))
                 except Exception:
                     pass
-        logging.error(f"连续 3 次登录失败：{last_error}")
+        logging.error(f"连续 5 次登录失败：{last_error}")
         return -1
 
     def get_user_info(self):
